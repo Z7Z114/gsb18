@@ -14,6 +14,10 @@ router = APIRouter(prefix="/meetings", tags=["会议管理"])
 
 @router.post("/", response_model=schemas.Meeting)
 def create_meeting(meeting: schemas.MeetingCreate, db: Session = Depends(get_db)):
+    hall = db.query(models.Hall).filter(models.Hall.id == meeting.hall_id).first()
+    if not hall:
+        raise HTTPException(status_code=404, detail="殿堂不存在")
+
     db_meeting = models.Meeting(
         hall_id=meeting.hall_id,
         title=meeting.title,
@@ -30,9 +34,15 @@ def create_meeting(meeting: schemas.MeetingCreate, db: Session = Depends(get_db)
 @router.get("/", response_model=List[schemas.Meeting])
 def get_meetings(hall_id: Optional[int] = None, skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
     query = db.query(models.Meeting)
-    if hall_id:
+    # 只要带了 hall_id（包括 0）就必须严格过滤，不用真值判断
+    if hall_id is not None:
         query = query.filter(models.Meeting.hall_id == hall_id)
-    meetings = query.offset(skip).limit(limit).all()
+    meetings = (
+        query.order_by(models.Meeting.date.desc(), models.Meeting.id.desc())
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
     return meetings
 
 
@@ -50,9 +60,24 @@ async def upload_audio(meeting_id: int, file: UploadFile = File(...), db: Sessio
     if not meeting:
         raise HTTPException(status_code=404, detail="会议不存在")
 
-    os.makedirs(settings.TEMP_AUDIO_DIR, exist_ok=True)
-    file_location = os.path.join(settings.TEMP_AUDIO_DIR, f"meeting_{meeting_id}_{file.filename}")
-    
+    # 只取客户端文件名的最后一段，剥离目录分隔符与 ..
+    # （Windows 风格的反斜杠分隔符也要防住）
+    raw_name = file.filename or ""
+    raw_name = raw_name.replace("\\", "/").replace("/", os.sep)
+    safe_name = os.path.basename(raw_name).replace("..", "").lstrip(os.sep).strip()
+    if not safe_name or safe_name in (os.curdir, os.pardir):
+        safe_name = "audio"
+
+    audio_dir = os.path.abspath(settings.TEMP_AUDIO_DIR)
+    os.makedirs(audio_dir, exist_ok=True)
+    file_location = os.path.abspath(
+        os.path.join(audio_dir, f"meeting_{meeting_id}_{safe_name}")
+    )
+
+    # 双保险：最终落盘路径必须真实位于 TEMP_AUDIO_DIR 之内
+    if os.path.commonpath([audio_dir, file_location]) != audio_dir:
+        raise HTTPException(status_code=400, detail="非法的音频文件名")
+
     with open(file_location, "wb") as buffer:
         content = await file.read()
         buffer.write(content)
@@ -111,7 +136,8 @@ async def process_meeting_audio(meeting_id: int, db: Session):
         speaker_roles = await ai_service.identify_speaker_roles(aligned_segments)
 
         db.query(models.DialogueTurn).filter(models.DialogueTurn.meeting_id == meeting_id).delete()
-        
+
+        dialogue_rows = []
         for seg in aligned_segments:
             speaker = seg["speaker"]
             dialogue = models.DialogueTurn(
@@ -122,6 +148,7 @@ async def process_meeting_audio(meeting_id: int, db: Session):
                 timestamp=f"{seg['start']:.1f}s - {seg['end']:.1f}s",
             )
             db.add(dialogue)
+            dialogue_rows.append(dialogue)
 
         hall = meeting.hall
         hall_info = {
@@ -144,10 +171,6 @@ async def process_meeting_audio(meeting_id: int, db: Session):
             meeting.fundraising_copy
         )
 
-        dialogue_turns = db.query(models.DialogueTurn).filter(
-            models.DialogueTurn.meeting_id == meeting_id
-        ).all()
-
         dialogue_list = [
             {
                 "speaker": d.speaker,
@@ -155,7 +178,7 @@ async def process_meeting_audio(meeting_id: int, db: Session):
                 "content": d.content,
                 "timestamp": d.timestamp,
             }
-            for d in dialogue_turns
+            for d in dialogue_rows
         ]
 
         markdown_content = document_service.generate_merit_markdown(

@@ -69,14 +69,15 @@ def get_hall(hall_id: int, db: Session = Depends(get_db)):
 
 
 @router.put("/halls/{hall_id}", response_model=schemas.Hall)
-def update_hall(hall_id: int, hall_update: schemas.HallCreate, db: Session = Depends(get_db)):
+def update_hall(hall_id: int, hall_update: schemas.HallUpdate, db: Session = Depends(get_db)):
     db_hall = db.query(models.Hall).filter(models.Hall.id == hall_id).first()
     if not db_hall:
         raise HTTPException(status_code=404, detail="殿堂不存在")
-    
-    for key, value in hall_update.model_dump().items():
+
+    # 只覆盖请求体里实际出现的字段；temple_id 永远以库中原值为准
+    for key, value in hall_update.model_dump(exclude_unset=True).items():
         setattr(db_hall, key, value)
-    
+
     db.commit()
     db.refresh(db_hall)
     return db_hall

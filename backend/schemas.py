@@ -22,7 +22,6 @@ class Temple(TempleBase):
 
 
 class HallBase(BaseModel):
-    temple_id: int
     name: str
     description: Optional[str] = None
     damage_details: Optional[Dict[str, Any]] = None
@@ -31,10 +30,21 @@ class HallBase(BaseModel):
 
 
 class HallCreate(HallBase):
-    pass
+    # 殿堂归属由路径参数决定；请求体里若带了 temple_id 也会被忽略
+    temple_id: Optional[int] = None
+
+
+class HallUpdate(BaseModel):
+    # PUT 为部分更新：只覆盖请求体里出现的字段；temple_id 不可经此修改
+    name: Optional[str] = None
+    description: Optional[str] = None
+    damage_details: Optional[Dict[str, Any]] = None
+    repair_plan: Optional[Dict[str, Any]] = None
+    estimated_cost: Optional[str] = None
 
 
 class Hall(HallBase):
+    temple_id: int
     id: int
     created_at: datetime
 

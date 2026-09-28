@@ -7,22 +7,27 @@ from ..config import settings
 
 class AIService:
     def __init__(self):
-        # The OpenAI client is created lazily so that the backend can be
-        # imported and exercised without credentials. Callers already guard
-        # every network call with try/except and fall back to their offline
-        # branch when the client cannot be created.
-        self._client = None
-
-    @property
-    def client(self):
-        if self._client is None:
-            self._client = AsyncOpenAI(
+        # client 是 OpenAI 客户端的注入点：默认可直接替换；未配置 Key 时为
+        # None，所有调用走离线分支，绝不创建客户端、绝不发网络请求。
+        self.client = None
+        if settings.OPENAI_API_KEY:
+            self.client = AsyncOpenAI(
                 api_key=settings.OPENAI_API_KEY,
                 base_url=settings.OPENAI_BASE_URL,
             )
-        return self._client
+
+    @staticmethod
+    def _field(segment, key):
+        # OpenAI SDK 返回的分段是带属性的对象而不是 dict
+        if isinstance(segment, dict):
+            return segment[key]
+        return getattr(segment, key)
 
     async def transcribe_audio(self, audio_file_path: str) -> Dict[str, Any]:
+        if self.client is None:
+            # 离线分支：确定结果，不发起任何网络请求
+            return {"transcript": "", "segments": []}
+
         try:
             with open(audio_file_path, "rb") as audio_file:
                 transcript = await self.client.audio.transcriptions.create(
@@ -36,9 +41,9 @@ class AIService:
                 "transcript": transcript.text,
                 "segments": [
                     {
-                        "start": seg["start"],
-                        "end": seg["end"],
-                        "text": seg["text"],
+                        "start": self._field(seg, "start"),
+                        "end": self._field(seg, "end"),
+                        "text": self._field(seg, "text"),
                     }
                     for seg in transcript.segments
                 ],
@@ -144,6 +149,16 @@ class AIService:
 
 请使用古风文雅的语言，符合佛门语境。"""
 
+        if self.client is None:
+            hall_name = (hall_info or {}).get("name", "本寺殿堂")
+            offline_summary = (
+                f"【离线纪要】本次为{hall_name}修缮事宜会商，"
+                "因未配置 AI 服务，纪要由离线分支生成。"
+            )
+            if transcript:
+                offline_summary += "\n\n会议对话实录如下：\n" + transcript
+            return offline_summary
+
         try:
             response = await self.client.chat.completions.create(
                 model="gpt-4o",
@@ -156,6 +171,13 @@ class AIService:
 
     async def generate_fundraising_copy(self, summary: str, 
                                        hall_info: Dict) -> str:
+        if self.client is None:
+            hall_name = (hall_info or {}).get("name", "本寺殿堂")
+            return (
+                f"【离线募捐文案】伏以三宝慈光，普荫群萌。{hall_name}年深岁久，"
+                "亟待修缮。愿诸善信随喜布施，共襄盛举，功德无量。"
+            )
+
         prompt = f"""你是一位寺庙的文疏法师，请根据以下会议纪要和殿堂信息，撰写一篇感人至深的募捐文案。
 
 殿堂信息：
@@ -189,6 +211,14 @@ class AIService:
             return f"生成募捐文案时出错: {str(e)}"
 
     async def generate_merit_list(self, fundraising_copy: str) -> str:
+        if self.client is None:
+            return (
+                "【离线功德回向清单】\n"
+                "- 随喜布施者，回向合家平安、福慧增长\n"
+                "- 发心供养者，回向事业顺遂、善愿皆成\n"
+                "- 乐助修缮者，镌刻芳名、世代流芳"
+            )
+
         prompt = f"""你是一位寺庙的知客师，请根据以下募捐文案，撰写一份功德回向清单模板。
 
 募捐文案：
@@ -228,6 +258,12 @@ class AIService:
             speaker_texts[speaker].append(seg["text"])
 
         speaker_roles = {}
+        if self.client is None:
+            # 离线分支：不联网，给出确定的默认角色
+            for index, speaker in enumerate(speaker_texts):
+                speaker_roles[speaker] = "住持" if index == 0 else "工匠"
+            return speaker_roles
+
         for speaker, texts in speaker_texts.items():
             combined_text = " ".join(texts)
             prompt = f"""根据以下对话内容，判断说话人{SPEAKER_NAMES.get(speaker, speaker)}的身份角色。
