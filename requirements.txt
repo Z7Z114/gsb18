@@ -1,0 +1,21 @@
+# 核心运行依赖（轻量，可直接 pip install -r requirements.txt）
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+python-multipart==0.0.9
+python-dotenv==1.0.1
+pydantic==2.9.2
+pydantic-settings==2.5.2
+sqlalchemy==2.0.35
+openai==1.45.0
+markdown==3.7
+jinja2==3.1.4
+aiofiles==24.1.0
+pydub==0.25.1
+
+# 测试依赖
+pytest==8.3.3
+httpx==0.27.2
+
+# 可选：本地说话人分离。体积很大（会拉入 torch），按需自行安装。
+# 未安装时 diarize_speakers 走离线分支。
+# pyannote.audio==3.3.1
